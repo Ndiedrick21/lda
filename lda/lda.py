@@ -93,27 +93,28 @@ class LDA:
 
     def __init__(self, n_topics, n_iter=2000, alpha=0.1, eta=0.01, random_state=None,
                  refresh=10):
-        self.n_topics = n_topics
-        self.n_iter = n_iter
-        self.alpha = alpha
-        self.eta = eta
+        self.n_topics = n_topics  # number of topics to look for
+        self.n_iter = n_iter  # number of iterations to run
+        self.alpha = alpha  # dirichlet dist param for topics
+        self.eta = eta  # dirichlet dist param for words
         # if random_state is None, check_random_state(None) does nothing
         # other than return the current numpy RandomState
-        self.random_state = random_state
-        self.refresh = refresh
+        self.random_state = random_state # RNG seed?
+        self.refresh = refresh  # log likeliness logging frequency
 
-        if alpha <= 0 or eta <= 0:
+        if alpha <= 0 or eta <= 0:  # These params must be gt zero
             raise ValueError("alpha and eta must be greater than zero")
 
         # random numbers that are reused
-        rng = lda.utils.check_random_state(random_state)
+        rng = lda.utils.check_random_state(random_state) # standardizes RNG seed if necessary
         self._rands = rng.rand(1024**2 // 8)  # 1MiB of random variates
 
         # configure console logging if not already configured
         if len(logger.handlers) == 1 and isinstance(logger.handlers[0], logging.NullHandler):
             logging.basicConfig(level=logging.INFO)
 
-    def fit(self, X, y=None):
+    def fit(self, X, y=None, topic_lists=None):
+        print("In local code")
         """Fit the model with X.
 
         Parameters
@@ -127,7 +128,8 @@ class LDA:
         self : object
             Returns the instance itself.
         """
-        self._fit(X)
+        # At this point it doesn't seem like any initial distributions are set
+        self._fit(X, topic_lists)
         return self
 
     def fit_transform(self, X, y=None):
@@ -229,7 +231,7 @@ class LDA:
         assert theta_doc.shape == (self.n_topics,)
         return theta_doc
 
-    def _fit(self, X):
+    def _fit(self, X,topic_lists):
         """Fit the model to the data X
 
         Parameters
@@ -238,9 +240,14 @@ class LDA:
             Training vector, where n_samples in the number of samples and
             n_features is the number of features. Sparse matrix allowed.
         """
+        # X is doc-term
         random_state = lda.utils.check_random_state(self.random_state)
         rands = self._rands.copy()
-        self._initialize(X)
+        if topic_lists == None:
+            self._initialize(X)  # dist and temp value initialization | I think this is where I would want to implement a seeded topic of new docs
+        else:
+            self._initialize_with_topic_seed(X, topic_lists)
+        print("Topic word dist: " + str(self.nz_))
         for it in range(self.n_iter):
             # FIXME: using numpy.roll with a random shift might be faster
             random_state.shuffle(rands)
@@ -249,6 +256,7 @@ class LDA:
                 logger.info("<{}> log likelihood: {:.0f}".format(it, ll))
                 # keep track of loglikelihoods for monitoring convergence
                 self.loglikelihoods_.append(ll)
+
             self._sample_topics(rands)
         ll = self.loglikelihood()
         logger.info("<{}> log likelihood: {:.0f}".format(self.n_iter - 1, ll))
@@ -266,8 +274,8 @@ class LDA:
         return self
 
     def _initialize(self, X):
-        D, W = X.shape
-        N = int(X.sum())
+        D, W = X.shape  # D is number of documents | W is number of words
+        N = int(X.sum())  # N is total word count across all docs
         n_topics = self.n_topics
         n_iter = self.n_iter
         logger.info("n_documents: {}".format(D))
@@ -276,21 +284,106 @@ class LDA:
         logger.info("n_topics: {}".format(n_topics))
         logger.info("n_iter: {}".format(n_iter))
 
-        self.nzw_ = nzw_ = np.zeros((n_topics, W), dtype=np.intc)
-        self.ndz_ = ndz_ = np.zeros((D, n_topics), dtype=np.intc)
-        self.nz_ = nz_ = np.zeros(n_topics, dtype=np.intc)
+        self.nzw_ = nzw_ = np.zeros((n_topics, W), dtype=np.intc)  # initialize the topic-word distributions
+        self.ndz_ = ndz_ = np.zeros((D, n_topics), dtype=np.intc)  # initialize the doc-topic distributions
+        self.nz_ = nz_ = np.zeros(n_topics, dtype=np.intc)  # initialize an array of length num_topic
 
         self.WS, self.DS = WS, DS = lda.utils.matrix_to_lists(X)
-        self.ZS = ZS = np.empty_like(self.WS, dtype=np.intc)
-        np.testing.assert_equal(N, len(WS))
-        for i in range(N):
+        # Converts a possible sparse matrix to a literal list of values for words and documents
+        self.ZS = ZS = np.empty_like(self.WS, dtype=np.intc)  #Zs is the length of the size of the vocabulary
+        np.testing.assert_equal(N, len(WS)) ## WS is of length N
+        for i in range(N): # for every word used
             w, d = WS[i], DS[i]
-            z_new = i % n_topics
-            ZS[i] = z_new
-            ndz_[d, z_new] += 1
-            nzw_[z_new, w] += 1
-            nz_[z_new] += 1
+            # w is the ith word in the vocab | d is the document that that specific word instance is coming from
+            z_new = i % n_topics # gets the topic assignment as the next topic in order
+            ZS[i] = z_new # assign the word in the doc a topic in a way to start with even topic dist
+            # Based on this, even the same word in the same doc can have a different initial topic
+            ndz_[d, z_new] += 1  # increment the count of that topic for that doc
+            nzw_[z_new, w] += 1 # increment the count of that topic for that term
+            nz_[z_new] += 1 # increment that topics use count
         self.loglikelihoods_ = []
+
+    def _initialize_with_new_topic(self, X, num_synth_words, doc_list):
+        print("In initialize with new topic")
+        D, W = X.shape  # D is number of documents | W is number of words
+        N = int(X.sum())  # N is total word count across all docs
+        n_topics = self.n_topics
+        n_iter = self.n_iter
+        logger.info("n_documents: {}".format(D))
+        logger.info("vocab_size: {}".format(W))
+        logger.info("n_words: {}".format(N))
+        logger.info("n_topics: {}".format(n_topics))
+        logger.info("n_iter: {}".format(n_iter))
+
+        self.nzw_ = nzw_ = np.zeros((n_topics, W), dtype=np.intc)  # initialize the topic-word distributions
+        self.ndz_ = ndz_ = np.zeros((D, n_topics), dtype=np.intc)  # initialize the doc-topic distributions
+        self.nz_ = nz_ = np.zeros(n_topics, dtype=np.intc)  # initialize an array of length num_topic
+
+        self.WS, self.DS = WS, DS = lda.utils.matrix_to_lists(X)
+        # Converts a possible sparse matrix to a literal list of values for words and documents
+        self.ZS = ZS = np.empty_like(self.WS, dtype=np.intc)  # Zs is the length of the size of the vocabulary
+        np.testing.assert_equal(N, len(WS))  ## WS is of length N
+        in_doc_count = 0
+        print(doc_list)
+        for i in range(N):  # for every word used
+            w, d = WS[i], DS[i]
+            # w is the ith word in the vocab | d is the document that that specific word instance is coming from
+            # if w >= W-num_synth_words or (doc_list is not None and d in doc_list):
+            if w >= W - num_synth_words:
+                z_new = n_topics-1
+                in_doc_count += 1
+            else:
+                z_new = i % (n_topics - 1)  # gets the topic assignment as the next topic in order
+            ZS[i] = z_new  # assign the word in the doc a topic in a way to start with even topic dist
+            # Based on this, even the same word in the same doc can have a different initial topic
+            ndz_[d, z_new] += 1  # increment the count of that topic for that doc
+            nzw_[z_new, w] += 1  # increment the count of that topic for that term
+            nz_[z_new] += 1  # increment that topics use count
+        print("In doc count: "+str(in_doc_count))
+        self.loglikelihoods_ = []
+
+    def _initialize_with_topic_seed(self, X, topics_list):
+        print("Seeding with specific topics...")
+        D, W = X.shape  # D is number of documents | W is number of words
+        N = int(X.sum())  # N is total word count across all docs
+        n_topics = self.n_topics
+        n_iter = self.n_iter
+        logger.info("n_documents: {}".format(D))
+        logger.info("vocab_size: {}".format(W))
+        logger.info("n_words: {}".format(N))
+        logger.info("n_topics: {}".format(n_topics))
+        logger.info("n_iter: {}".format(n_iter))
+
+        self.nzw_ = nzw_ = np.zeros((n_topics, W), dtype=np.intc)  # initialize the topic-word distributions
+        self.ndz_ = ndz_ = np.zeros((D, n_topics), dtype=np.intc)  # initialize the doc-topic distributions
+        self.nz_ = nz_ = np.zeros(n_topics, dtype=np.intc)  # initialize an array of length num_topic
+
+        self.WS, self.DS = WS, DS = lda.utils.matrix_to_lists(X)
+        # Converts a possible sparse matrix to a literal list of values for words and documents
+        self.ZS = ZS = np.empty_like(self.WS, dtype=np.intc)  #Zs is the length of the size of the vocabulary
+        np.testing.assert_equal(N, len(WS)) ## WS is of length N
+        for i in range(N): # for every word used
+            w, d = WS[i], DS[i]
+            # w is the ith word in the vocab | d is the document that that specific word instance is coming from
+            topic = self.get_topic(w, topics_list)
+            if topic == -1:
+                z_new = i % n_topics # gets the topic assignment as the next topic in order
+            else:
+                z_new = topic
+            ZS[i] = z_new # assign the word in the doc a topic in a way to start with even topic dist
+            # Based on this, even the same word in the same doc can have a different initial topic
+            ndz_[d, z_new] += 1  # increment the count of that topic for that doc
+            nzw_[z_new, w] += 1 # increment the count of that topic for that term
+            nz_[z_new] += 1 # increment that topics use count
+        self.loglikelihoods_ = []
+
+    def get_topic(self, word, topics_list):
+        topic = -1
+        for i, t in enumerate(topics_list):
+            if word in t:
+                topic = i
+                break
+        return topic
 
     def loglikelihood(self):
         """Calculate complete log likelihood, log p(w,z)
@@ -309,4 +402,5 @@ class LDA:
         alpha = np.repeat(self.alpha, n_topics).astype(np.float64)
         eta = np.repeat(self.eta, vocab_size).astype(np.float64)
         lda._lda._sample_topics(self.WS, self.DS, self.ZS, self.nzw_, self.ndz_, self.nz_,
-                                alpha, eta, rands)
+                                alpha, eta, rands)  # This is where the work of gibbs sampling is done
+        # This implementation is in the _lda.pyx file. I think this type of file gets compiled to C to run efficiently

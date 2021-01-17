@@ -5,6 +5,7 @@
 
 from cython.operator cimport preincrement as inc, predecrement as dec
 from libc.stdlib cimport malloc, free
+from libc.stdio cimport printf
 
 
 cdef extern from "gamma.h":

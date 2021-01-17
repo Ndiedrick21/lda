@@ -55,14 +55,14 @@ def matrix_to_lists(doc_word):
     if sparse and not np.issubdtype(doc_word.dtype, np.integer):
         raise ValueError("expected sparse matrix with integer values, found float values")
 
-    ii, jj = np.nonzero(doc_word)
+    ii, jj = np.nonzero(doc_word) ## gets the non-zero indices of doc-term
     if sparse:
         ss = tuple(doc_word[i, j] for i, j in zip(ii, jj))
     else:
         ss = doc_word[ii, jj]
 
-    DS = np.repeat(ii, ss).astype(np.intc)
-    WS = np.repeat(jj, ss).astype(np.intc)
+    DS = np.repeat(ii, ss).astype(np.intc) # contains the index of document that each word belongs to
+    WS = np.repeat(jj, ss).astype(np.intc) # length is sum of word use in doc for every doc and word == N
     return WS, DS
 
 
